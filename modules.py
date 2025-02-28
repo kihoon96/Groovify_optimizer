@@ -9,6 +9,20 @@ import torchvision.models.resnet as resnet
 from core.config import cfg
 from models.layer import make_linear_layers, make_conv_layers, make_deconv_layers, LocallyConnected2d, KeypointAttention
 
+
+from easydict import EasyDict as edict
+
+cfg = edict()
+
+""" Model - MP """
+cfg.MD = edict()
+cfg.MD.hidden_dim = 144
+cfg.MD.seqlen = 49
+cfg.MD.mid_frame = 24
+cfg.MD.num_layers = 4
+cfg.MD.weight_path = ''
+
+
 class MDNet(nn.Module):
     def __init__(self):
         super(MDNet, self).__init__()
