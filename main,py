@@ -26,7 +26,8 @@ class GroovifyOptimizer:
                 prefetch_factor=2,
                 persistent_workers=True
             )
-        self.resample = AdaptiveResampler(256) # resample to 256 frame
+        self.resample1 = AdaptiveResampler(256) # resample to 256 frame
+        self.resample2 = AdaptiveResampler(150) # resample to 150 frame
         self.model = GroovifyNet().to(self.device)  
         self.binarydecoder = BinarySplitDecoder(tree_depth).to(self.device)
         self.loss_fn = RhythmLoss().to(self.device)
@@ -36,31 +37,35 @@ class GroovifyOptimizer:
             lr=config['learning_rate'],  
             weight_decay=config['weight_decay']  
         )  
-        self.loss_fn = torch.nn.SmoothL1Loss()  
 
     def train_epoch(self, epoch):  
         self.model.train()  
-        total_loss = 0  
+        total_loss = 0
+        total_original_loss = 0
         for batch_idx, (bpm, motion_seq) in enumerate(self.dataloader):  
             bpm, motion_seq = bpm.to(self.device), motion_seq.to(self.device)   # Bx1, BxTx147(24*6 + 3)      
              
             # preprocess data (resampling)
             batch_size = motion_seq.shape[0]
             orig_seq_len = motion_seq.shape[1]
-            motion_seq = self.resample(motion_seq)
+            sampled_motion_seq = self.resample1(motion_seq)
             # Z-score normalization with common BPM statistics
-            bpm = (bpm - 120.0) / 40.0  # Mean=120, STD=40
+            norm_bpm = (bpm - 120.0) / 40.0  # Mean=120, STD=40
             
             self.optimizer.zero_grad()  
-            out_activations = self.model(motion_seq, bpm)
+            out_activations = self.model(sampled_motion_seq, norm_bpm)
             binarytree =  self.binarydecoder(out_activations)
-            hierarchical_interpolate(motion_seq, binarytree)
-            loss = self.loss_fn(out_motion_seq, bpm)  
+            interpolation_seq = hierarchical_interpolate(sampled_motion_seq, binarytree)
+            out_motion_seq= self.resample2(interpolation_seq)
+            original_loss = self.loss_fn(motion_seq, bpm)
+            loss = self.loss_fn(out_motion_seq, bpm)
             loss.backward() 
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  
             self.optimizer.step()  
-            total_loss += loss.item()  
-        return total_loss / len(self.data_loader.train_loader)  
+            total_loss += loss.item()
+            total_original_loss += original_loss.item()
+        print(total_original_loss / len(self.dataloader)  )
+        return total_loss / len(self.dataloader)  
 
     # def validate(self, epoch):  
     #     self.model.eval()  
@@ -93,7 +98,7 @@ if __name__ == "__main__":
             'hidden_dim': 256,  
             'output_dim': 64  
         },  
-        'learning_rate': 3e-4,  
+        'learning_rate': 1e-3,  
         'weight_decay': 1e-5,  
         'epochs': 100,  
         'batch_size': 32  

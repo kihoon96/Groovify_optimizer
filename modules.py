@@ -145,25 +145,6 @@ class RhythmAwareFusion(nn.Module):
         out = self.out_proj(out)  # [B, T, C]
         return out
 
-# # Attention Fusion
-# class RhythmAwareFusion(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         self.query = nn.Linear(147, 64) # 24x6 rot + 3 trans
-#         self.key = nn.Linear(32, 64)
-        
-#     def forward(self, pose, bpm_emb):
-#         import pdb; pdb.set_trace()
-#         pose = pose.permute(0,2,1)
-#         query = self.query(pose) # [B, 147, 64]
-#         key = self.key(bpm_emb).unsqueeze(1)
-        
-#         attn_scores = torch.matmul(query, key.transpose(-1, -2)) # [B, 147, 1]
-#         attn_weights = torch.softmax(attn_scores, dim=1) # [B, 147, 1]
-#         fused = torch.matmul(attn_weights.transpose(1,2), pose)  # [B, 1, 256]
-#         import pdb; pdb.set_trace()
-#         return fused.squeeze(1)  # [B, 256]
-
 class LN(nn.Module):
     def __init__(self, dim, epsilon=1e-5):
         super().__init__()
@@ -233,35 +214,56 @@ class BinarySplitDecoder(nn.Module):
     def __init__(self, tree_depth = 8):
         super().__init__()
         self.depth = tree_depth
-        # self.split_params = nn.Sequential(
-        #     nn.Linear(cfg.MD.hidden_dim, 2**tree_depth - 1),
-        #     nn.Sigmoid()
-        # )
         
-    def build_tree(self, alphas):
-        # Initialize timing matrix [Batch, Nodes]
-        nodes = torch.zeros(alphas.shape[0], 2**self.depth).to('cuda')
+    # def build_tree(self, alphas):
+    #     # Initialize timing matrix [Batch, Nodes]
+    #     nodes = torch.zeros(alphas.shape[0], 2**(self.depth + 1)).to('cuda')
         
-        # Root node covers full sequence
-        nodes[:,0] = 1.0
-        alpha_idx = 0  
-        for d in range(self.depth - 1):
-            level_nodes = 2**d
-            level_start = 2**d - 1
-            for n in range(level_nodes):
-                node_idx = level_start + n
+    #     # Root node covers full sequence
+    #     nodes[:,0] = 1.0
+    #     alpha_idx = 0  
+    #     for d in range(self.depth):
+    #         level_nodes = 2**d
+    #         level_start = 2**d - 1
+    #         for n in range(level_nodes):
+    #             node_idx = level_start + n
 
-                left = 2**(d+1) - 1 + 2*n
-                right = left + 1
-                # Use sequential indexing for alphas
-                alpha = alphas[:, alpha_idx]    
+    #             left = 2**(d+1) - 1 + 2*n
+    #             right = left + 1
+    #             # Use sequential indexing for alphas
+    #             alpha = alphas[:, alpha_idx]    
+    #             alpha_idx += 1
+    #             nodes[:, left] = nodes[:, node_idx] * alpha
+    #             nodes[:, right] = nodes[:, node_idx] * (1 - alpha)
+    #     return nodes[:, -2**self.depth -1  : -1] # Return leaf nodes
+    
+    def build_tree(self, alphas):
+        batch_size = alphas.size(0)
+        current_level = torch.ones(batch_size, 1, device=alphas.device)
+        alpha_idx = 0
+
+        for d in range(self.depth):
+            next_level = torch.zeros(
+                batch_size, 
+                2 * current_level.size(1),  # Double the nodes each level
+                device=alphas.device
+            )
+            
+            # Split each parent node into two children
+            for n in range(current_level.size(1)):
+                parent = current_level[:, n]
+                alpha = alphas[:, alpha_idx]
                 alpha_idx += 1
-                nodes[:, left] = nodes[:, node_idx] * alpha
-                nodes[:, right] = nodes[:, node_idx] * (1 - alpha)
-        return nodes[:, -2**self.depth :] # Return leaf nodes
+                
+                # Compute children without inplace operations
+                next_level[:, 2*n] = parent * alpha
+                next_level[:, 2*n + 1] = parent * (1 - alpha)
+            
+            current_level = next_level  # Replace parent level with children
+
+        return current_level  # Final level contains all leaf nodes
 
     def forward(self, x):
-        # alpha_params = self.split_params(x)
         return self.build_tree(x)
 
 def hierarchical_interpolate(sequence, leaf_weights):
@@ -272,24 +274,23 @@ def hierarchical_interpolate(sequence, leaf_weights):
     
     # Generate sampling grid
     grid = torch.linspace(0, 1, time).to(sequence.device)
-    grid = grid.view(1, -1, 1).expand(batch, -1, 1)
+    grid = grid.view(1, -1).expand(batch, -1)  # [B, T] instead of [B, T, 1]
     
-    import pdb; pdb.set_trace()
     # Find segment indices
-    indices = torch.searchsorted(cum_weights.unsqueeze(-1), grid)
+    indices = torch.searchsorted(cum_weights, grid, right=False)
     lower = torch.clamp(indices-1, 0)
     upper = torch.clamp(indices, max=leaf_weights.shape[1]-1)
     
     # Linear interpolation weights
-    lower_weight = (cum_weights[...,upper] - grid) 
-    upper_weight = (grid - cum_weights[...,lower])
-    total_weight = (cum_weights[...,upper] - cum_weights[...,lower]) + 1e-8
+    lower_weight = cum_weights.gather(1, lower) - grid
+    upper_weight = grid - cum_weights.gather(1, lower)
+    total_weight = (cum_weights.gather(1, upper) - cum_weights.gather(1, lower)) + 1e-8
     
     # Gather features
-    lower_feat = torch.gather(sequence, 1, lower.expand(-1,-1,feat))
-    upper_feat = torch.gather(sequence, 1, upper.expand(-1,-1,feat))
+    lower_feat = sequence.gather(1, lower.unsqueeze(-1).expand(-1, -1, feat))
+    upper_feat = sequence.gather(1, upper.unsqueeze(-1).expand(-1, -1, feat))
     
-    return (lower_weight/total_weight)*lower_feat + (upper_weight/total_weight)*upper_feat
-
+    return (lower_weight/total_weight).unsqueeze(-1)*lower_feat + \
+           (upper_weight/total_weight).unsqueeze(-1)*upper_feat
 
 
