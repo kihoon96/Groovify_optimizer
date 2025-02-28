@@ -1,14 +1,19 @@
 # main.py  
 import torch  
 import numpy as np  
-from dataloader import PKLDataset
 from torch.utils.data import Dataset, DataLoader
+import os
+
+from dataloader import PKLDataset
 from modules import OptimizedMDNet, BinarySplitDecoder, hierarchical_interpolate
-from vis import PerformanceVisualizer  
+from loss import RhythmLoss
+#config
+tree_depth = 8
+n_resampling_bin = 2**tree_depth - 1
 
 class GroovifyOptimizer:  
     def __init__(self, config):  
-        # self.config = config  
+        self.config = config  
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         dataset = PKLDataset("./fullbaseline_split")
         self.dataloader = DataLoader(
@@ -20,10 +25,10 @@ class GroovifyOptimizer:
                 prefetch_factor=2,
                 persistent_workers=True
             )
-        self.model = OptimizedMDNet().to(self.device)  
-        self.binarydecoder = BinarySplitDecoder().to(self.device)  
+        self.model = OptimizedMDNet(n_resampling_bin).to(self.device)  
+        self.binarydecoder = BinarySplitDecoder(tree_depth).to(self.device)
+        self.loss_fn = RhythmLoss().to(self.device)
         
-        self.visualizer = PerformanceVisualizer()  
         self.optimizer = torch.optim.AdamW(  
             self.model.parameters(),  
             lr=config['learning_rate'],  
@@ -34,43 +39,43 @@ class GroovifyOptimizer:
     def train_epoch(self, epoch):  
         self.model.train()  
         total_loss = 0  
-        for batch_idx, (inputs, targets) in enumerate(self.data_loader.train_loader):  
-            inputs, targets = inputs.to(self.device), targets.to(self.device)  
+        for batch_idx, (bpm, motion_seq) in enumerate(self.dataloader):  
+            bpm, motion_seq = bpm.to(self.device), motion_seq.to(self.device)  
+            import pdb; pdb.set_trace()
+            in_vector = torch.cat(bpm, motion_seq)
+            
             self.optimizer.zero_grad()  
-            outputs = self.model(inputs)  
-            loss = self.loss_fn(outputs, targets)  
-            loss.backward()  
+            out_activations = self.model(motion_seq)  
+            loss = self.loss_fn(out_motion_seq, bpm)  
+            loss.backward() 
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  
             self.optimizer.step()  
             total_loss += loss.item()  
-            if batch_idx % 50 == 0:  
-                self.visualizer.update_train_metrics(epoch, batch_idx, loss.item())  
         return total_loss / len(self.data_loader.train_loader)  
 
-    def validate(self, epoch):  
-        self.model.eval()  
-        val_loss = 0  
-        with torch.no_grad():  
-            for inputs, targets in self.data_loader.val_loader:  
-                inputs, targets = inputs.to(self.device), targets.to(self.device)  
-                outputs = self.model(inputs)  
-                val_loss += self.loss_fn(outputs, targets).item()  
-        avg_val_loss = val_loss / len(self.data_loader.val_loader)  
-        self.visualizer.update_val_metrics(epoch, avg_val_loss)  
-        return avg_val_loss  
+    # def validate(self, epoch):  
+    #     self.model.eval()  
+    #     val_loss = 0  
+    #     with torch.no_grad():  
+    #         for inputs, targets in self.data_loader.val_loader:  
+    #             inputs, targets = inputs.to(self.device), targets.to(self.device)  
+    #             outputs = self.model(inputs)  
+    #             val_loss += self.loss_fn(outputs, targets).item()  
+    #     avg_val_loss = val_loss / len(self.data_loader.val_loader)  
+    #     self.visualizer.update_val_metrics(epoch, avg_val_loss)  
+    #     return avg_val_loss  
 
     def optimize(self):  
         best_loss = float('inf')  
         for epoch in range(self.config['epochs']):  
             train_loss = self.train_epoch(epoch)  
-            val_loss = self.validate(epoch)  
+            # val_loss = self.validate(epoch)  
             print(f"Epoch {epoch+1}/{self.config['epochs']} | "  
-                  f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")  
-            if val_loss < best_loss:  
-                best_loss = val_loss  
-                torch.save(self.model.state_dict(), 'best_model.pth')  
-            self.visualizer.plot_metrics()  
-
+                  f"Train Loss: {train_loss:.4f}") # | Val Loss: {val_loss:.4f}")  
+            # if val_loss < best_loss:  
+            #     best_loss = val_loss  
+            #     torch.save(self.model.state_dict(), 'best_model.pth')
+            
 if __name__ == "__main__":  
     config = {  
         'data_path': './data/',  
@@ -83,6 +88,13 @@ if __name__ == "__main__":
         'weight_decay': 1e-5,  
         'epochs': 100,  
         'batch_size': 32  
+    }  
+    # Hyperparameter search configuration  
+    search_space = {  
+        'learning_rate': [1e-4, 3e-4, 1e-3],  
+        'hidden_dim': [128, 256, 512],  
+        'dropout_rate': [0.2, 0.3, 0.4]  
+        # + layer depth, high level skip, resampling rate, 
     }  
     optimizer = GroovifyOptimizer(config)  
     optimizer.optimize()  

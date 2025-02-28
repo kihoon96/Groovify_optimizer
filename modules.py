@@ -6,8 +6,8 @@ import os.path as osp
 import math
 import torchvision.models.resnet as resnet
 
-from core.config import cfg
-from models.layer import make_linear_layers, make_conv_layers, make_deconv_layers, LocallyConnected2d, KeypointAttention
+# from core.config import cfg
+from layers import make_linear_layers, make_conv_layers, make_deconv_layers, LocallyConnected2d, KeypointAttention
 
 
 from easydict import EasyDict as edict
@@ -47,7 +47,7 @@ class MDNet(nn.Module):
         x = self.motion_fc_out(x)
         return x
 
-  class OptimizedMDNet(nn.Module):
+class OptimizedMDNet(nn.Module):
     def __init__(self, output_dim):
         super(OptimizedMDNet, self).__init__()
         self.base_network = MDNet()
@@ -60,6 +60,72 @@ class MDNet(nn.Module):
         pooled = self.temporal_pool(features.permute(0,2,1)).squeeze(-1)
         projected = self.dimension_projector(pooled)
         return self.output_activation(projected)
+
+
+class LN(nn.Module):
+    def __init__(self, dim, epsilon=1e-5):
+        super().__init__()
+        self.epsilon = epsilon
+
+        self.alpha = nn.Parameter(torch.ones([1, dim, 1]), requires_grad=True)
+        self.beta = nn.Parameter(torch.zeros([1, dim, 1]), requires_grad=True)
+
+    def forward(self, x):
+        mean = x.mean(axis=1, keepdim=True)
+        var = ((x - mean) ** 2).mean(dim=1, keepdim=True)
+        std = (var + self.epsilon).sqrt()
+        y = (x - mean) / std
+        y = y * self.alpha + self.beta
+        return y
+
+class Temporal_FC(nn.Module):
+    def __init__(self, dim):
+        super(Temporal_FC, self).__init__()
+        self.fc = nn.Linear(dim, dim)
+
+    def forward(self, x):
+        x = self.fc(x)
+        return x
+
+class MLPblock(nn.Module):
+    def __init__(self, dim, seq, use_norm=True):
+        super().__init__()
+        self.fc0 = Temporal_FC(seq)
+
+        layernorm_axis = 'spatial'
+        if use_norm:
+            if layernorm_axis == 'spatial':
+                self.norm0 = LN(dim)
+            else:
+                raise NotImplementedError
+        else:
+            self.norm0 = nn.Identity()
+
+        self.init_weights()
+
+    def init_weights(self):
+        nn.init.xavier_uniform_(self.fc0.fc.weight, gain=1e-8)
+        nn.init.constant_(self.fc0.fc.bias, 0)
+
+    def forward(self, x):
+        x_ = self.fc0(x)
+        x_ = self.norm0(x_)
+        x = x + x_
+        return x
+
+
+class TransMLP(nn.Module):
+    def __init__(self, dim, seq, num_layers):
+        super().__init__()
+        self.mlps = nn.Sequential(*[
+            MLPblock(dim, seq)
+            for i in range(num_layers)])
+
+    def forward(self, x):
+        x = self.mlps(x)
+        return x
+
+
 
 class BinarySplitDecoder(nn.Module):
     def __init__(self, tree_depth):

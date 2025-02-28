@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from torch.fft import rfft, rfftfreq
-from pytorch_metric_learning.losses import NTXentLoss
+# from pytorch_metric_learning.losses import NTXentLoss
 
 def y_energy(fftsignal, bq):
     bqs = [bq/4, 2* bq/4, 3*bq/4, bq, bq*3/2, bq*2, bq*3, bq*4]
@@ -58,19 +58,19 @@ class RhythmLoss(nn.Module):
         self.freq_weights = nn.Parameter(torch.ones(num_bands))
         self.base_freq = base_freq
         self.temp = temp
-        self.contrastive = NTXentLoss(temperature=temp)  # Contrastive regularization
+        # self.contrastive = NTXentLoss(temperature=temp)  # Contrastive regularization
         
     def forward(self, fftsignal_batch, bq_batch, motion_features):
         # Spectral attention with learnable weights
         rhythm_energy = self.spectral_attention(fftsignal_batch, bq_batch)
         
         # Contrastive regularization in motion feature space
-        contrast_loss = self.contrastive(motion_features)
+        # contrast_loss = self.contrastive(motion_features)
         
         # Temporal consistency from DTW alignment [5][7]
         dtw_loss = self.dtw_alignment_loss(fftsignal_batch)
         
-        return rhythm_energy + 0.3*contrast_loss + 0.2*dtw_loss
+        return rhythm_energy # +  0.3*contrast_loss + 0.2*dtw_loss
 
     def spectral_attention(self, fftsignal, bq_tensor):
         # Multi-band frequency masking with learnable importance

@@ -338,10 +338,6 @@ def skeleton_render_simple(
     temp_dir.cleanup()
     plt.close()
     
-    
-    
-    
-
 class SMPLSkeleton:
     def __init__(
         self, device=None,
