@@ -1,16 +1,28 @@
 # main.py  
 import torch  
 import numpy as np  
-from dataloader import GroovifyDataLoader  
-from modules import OptimizationEngine  
+from dataloader import PKLDataset
+from torch.utils.data import Dataset, DataLoader
+from modules import OptimizedMDNet, BinarySplitDecoder, hierarchical_interpolate
 from vis import PerformanceVisualizer  
 
 class GroovifyOptimizer:  
     def __init__(self, config):  
-        self.config = config  
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
-        self.data_loader = GroovifyDataLoader(config['data_path'])  
-        self.model = OptimizationEngine(**config['model_params']).to(self.device)  
+        # self.config = config  
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dataset = PKLDataset("./fullbaseline_split")
+        self.dataloader = DataLoader(
+                dataset,
+                batch_size=32,
+                shuffle=True,
+                num_workers=os.cpu_count()//2,
+                pin_memory=True,
+                prefetch_factor=2,
+                persistent_workers=True
+            )
+        self.model = OptimizedMDNet().to(self.device)  
+        self.binarydecoder = BinarySplitDecoder().to(self.device)  
+        
         self.visualizer = PerformanceVisualizer()  
         self.optimizer = torch.optim.AdamW(  
             self.model.parameters(),  
