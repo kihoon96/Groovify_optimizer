@@ -3,6 +3,37 @@ import pickle
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+import re
+
+from vis import skeleton_render_simple, SMPLSkeleton
+smpl = SMPLSkeleton()
+
+def get_gt_BPM_aistpp(wav_name):
+    # 10 genres
+    GT_BPMS = [
+    # mBR, mPO, mLO, mMH, mLH, mWA, mKR, mJS, mJB
+    [80, 90, 100, 110, 120, 130],
+    # [130, 80, 90, 100, 110, 120],
+    # mHO
+    [110, 115, 120, 125, 130, 135]
+    # [135, 110, 115, 120, 125, 130]
+    ]
+    music_genres = ['mBR', 'mPO', 'mLO', 'mMH', 'mLH', 'mWA', 'mKR', 'mJS', 'mJB', 'mHO']
+
+    number = -1
+    for target_substring in music_genres:
+        match = re.search(f"{target_substring}(\d+)", wav_name)
+        if match:
+            number = match.group(1)
+            number = int(number)
+            if target_substring == 'mHO':
+                target_bpm = GT_BPMS[1][number]
+            else:
+                target_bpm = GT_BPMS[0][number]
+            return target_bpm
+    assert number == -1, "No number found after the target substrings."
+    return -1
+
 class PKLDataset(Dataset):
     def __init__(self, root_dir):
         self.root_dir = root_dir
@@ -18,17 +49,30 @@ class PKLDataset(Dataset):
         file_path = os.path.join(self.root_dir, self.file_list[idx])
         with open(file_path, 'rb') as f:
             data = pickle.load(f)
-        features = torch.tensor(data['features'], dtype=torch.float32)
-        labels = torch.tensor(data['label'], dtype=torch.long)
-        return features, labels
+            
+        pklname = str(file_path).split('/')[-1]
+        gt_bpm = torch.tensor(get_gt_BPM_aistpp(pklname), dtype=torch.float32)
+        # joint_rot = data['smpl_poses'].reshape(-1,24,3)
+        # joint_rot6d = data['smpl_poses_6d']
+        joint_3d = torch.tensor(data['full_pose'], dtype=torch.float32)
+        
+        return gt_bpm, joint_3d
 
 
-dataloader = DataLoader(
-    dataset,
-    batch_size=256,
-    shuffle=True,
-    num_workers=os.cpu_count()//2,
-    pin_memory=True,
-    prefetch_factor=2,
-    persistent_workers=True
-)
+if __name__  == "__main__":
+    dataset = PKLDataset("./fullbaseline_split")
+    dataloader = DataLoader(
+        dataset,
+        batch_size=32,
+        shuffle=True,
+        num_workers=os.cpu_count()//2,
+        pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True
+    )
+    dataset.__getitem__(0)
+
+
+
+
+
