@@ -53,10 +53,12 @@ class PKLDataset(Dataset):
         pklname = str(file_path).split('/')[-1]
         gt_bpm = torch.tensor(get_gt_BPM_aistpp(pklname), dtype=torch.float32)
         # joint_rot = data['smpl_poses'].reshape(-1,24,3)
-        # joint_rot6d = data['smpl_poses_6d']
-        joint_3d = torch.tensor(data['full_pose'], dtype=torch.float32)
+        joint_rot6d = torch.tensor(data['smpl_poses_6d'], dtype=torch.float32)
+        joint_trans = torch.tensor(data['smpl_trans'], dtype=torch.float32)
+        # joint_3d = torch.tensor(data['full_pose'], dtype=torch.float32)
+        joint_input = torch.cat((joint_trans, joint_rot6d), dim=1)
         
-        return gt_bpm, joint_3d
+        return gt_bpm, joint_input
 
 
 if __name__  == "__main__":

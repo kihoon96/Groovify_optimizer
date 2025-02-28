@@ -5,7 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 import os
 
 from dataloader import PKLDataset
-from modules import OptimizedMDNet, BinarySplitDecoder, hierarchical_interpolate
+from modules import GroovifyNet, BinarySplitDecoder, hierarchical_interpolate, AdaptiveResampler
+
 from loss import RhythmLoss
 #config
 tree_depth = 8
@@ -25,7 +26,8 @@ class GroovifyOptimizer:
                 prefetch_factor=2,
                 persistent_workers=True
             )
-        self.model = OptimizedMDNet(n_resampling_bin).to(self.device)  
+        self.resample = AdaptiveResampler(256) # resample to 256 frame
+        self.model = GroovifyNet().to(self.device)  
         self.binarydecoder = BinarySplitDecoder(tree_depth).to(self.device)
         self.loss_fn = RhythmLoss().to(self.device)
         
@@ -40,12 +42,19 @@ class GroovifyOptimizer:
         self.model.train()  
         total_loss = 0  
         for batch_idx, (bpm, motion_seq) in enumerate(self.dataloader):  
-            bpm, motion_seq = bpm.to(self.device), motion_seq.to(self.device)  
-            import pdb; pdb.set_trace()
-            in_vector = torch.cat(bpm, motion_seq)
+            bpm, motion_seq = bpm.to(self.device), motion_seq.to(self.device)   # Bx1, BxTx147(24*6 + 3)      
+             
+            # preprocess data (resampling)
+            batch_size = motion_seq.shape[0]
+            orig_seq_len = motion_seq.shape[1]
+            motion_seq = self.resample(motion_seq)
+            # Z-score normalization with common BPM statistics
+            bpm = (bpm - 120.0) / 40.0  # Mean=120, STD=40
             
             self.optimizer.zero_grad()  
-            out_activations = self.model(motion_seq)  
+            out_activations = self.model(motion_seq, bpm)
+            binarytree =  self.binarydecoder(out_activations)
+            hierarchical_interpolate(motion_seq, binarytree)
             loss = self.loss_fn(out_motion_seq, bpm)  
             loss.backward() 
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  
@@ -90,7 +99,7 @@ if __name__ == "__main__":
         'batch_size': 32  
     }  
     # Hyperparameter search configuration  
-    search_space = {  
+    search_space = {   
         'learning_rate': [1e-4, 3e-4, 1e-3],  
         'hidden_dim': [128, 256, 512],  
         'dropout_rate': [0.2, 0.3, 0.4]  
