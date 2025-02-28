@@ -39,6 +39,7 @@ def y_energy(fftsignal, bq):
 
 def y_energy_batch(fftsignal_batch, bq_batch):
     # Create bqs for each batch item
+    # bqs = torch.stack([torch.tensor([bq/2, bq, bq*2]) 
     bqs = torch.stack([torch.tensor([bq/4, 2*bq/4, 3*bq/4, bq, bq*3/2, bq*2, bq*3, bq*4]) 
                            for bq in bq_batch]).to('cuda')
 

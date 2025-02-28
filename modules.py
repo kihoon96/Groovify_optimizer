@@ -22,8 +22,22 @@ cfg.MD.mid_frame = 24
 cfg.MD.num_layers = 4
 cfg.MD.resample = 256
 cfg.MD.weight_path = ''
-output_dim = 256 -1
+output_dim = 256
 
+def nani(input, i):
+    if torch.isnan(input).any():
+        print(f"shit!{str(i)}")
+        import pdb; pdb.set_trace()
+        
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        # Xavier/Glorot initialization
+        nn.init.xavier_uniform_(m.weight)
+        # Zero initialization for bias
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+
+# torch.autograd.set_detect_anomaly(True)  
 
 class GroovifyNet(nn.Module):
     def __init__(self):
@@ -32,7 +46,7 @@ class GroovifyNet(nn.Module):
         
         self.bpm_projection = nn.Sequential(
             nn.Linear(1, 16),
-            nn.GELU(),
+            nn.ReLU(),
             nn.Linear(16, 32),
             nn.LayerNorm(32)
         )
@@ -48,6 +62,7 @@ class GroovifyNet(nn.Module):
         
     def init_weights(self):
         # 추가필요
+        self.bpm_projection.apply(init_weights)
         nn.init.xavier_uniform_(self.motion_fc_out.weight, gain=1e-8)
         nn.init.constant_(self.motion_fc_out.bias, 0)
 
@@ -60,20 +75,23 @@ class GroovifyNet(nn.Module):
         x = self.motion_fc_in(x)
         
         # bpm embedding
+        bpm_debug = bpm
         bpm = self.bpm_projection(bpm.unsqueeze(-1))
-        
+        nani(bpm,1)
         # fusion attention
         x = self.fusion_attention(x, bpm)
-        
+        nani(x,2)
         # after fusion mlp
         x = x.permute(0, 2, 1)
         x = self.motion_mlp(x)
+        nani(x,3)
         x = x.permute(0, 2, 1)
         x = self.motion_fc_out(x)
-        
-        x = self.temporal_pool(x.permute(0,2,1)).squeeze(-1)
-        x = self.dimension_projector(x)
+        nani(x,4)
+        x = self.temporal_pool(x).squeeze(-1)
+        # x = self.dimension_projector(x)
         x = self.output_activation(x)
+        nani(x,5)
         return x
 
 class AdaptiveResampler(nn.Module):
@@ -135,7 +153,13 @@ class RhythmAwareFusion(nn.Module):
         
         # Compute attention scores
         attn_scores = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # [B, H, T, T]
-        attn_weights = torch.softmax(attn_scores, dim=-1)  # [B, H, T, T]
+        max_score = attn_scores.max(dim=-1, keepdim=True).values
+        stable_scores = attn_scores - max_score
+        attn_weights = torch.exp(stable_scores - torch.logsumexp(stable_scores, dim=-1, keepdim=True)) 
+        #print(max_score)
+
+        
+        # attn_weights = torch.softmax(attn_scores, dim=-1)  # [B, H, T, T]
         
         # Apply attention weights to values
         out = torch.matmul(attn_weights, v)  # [B, H, T, D]
@@ -236,14 +260,14 @@ class BinarySplitDecoder(nn.Module):
     #             nodes[:, left] = nodes[:, node_idx] * alpha
     #             nodes[:, right] = nodes[:, node_idx] * (1 - alpha)
     #     return nodes[:, -2**self.depth -1  : -1] # Return leaf nodes
-    
+        
     def build_tree(self, alphas):
         batch_size = alphas.size(0)
         current_level = torch.ones(batch_size, 1, device=alphas.device)
         alpha_idx = 0
 
         for d in range(self.depth):
-            next_level = torch.zeros(
+            next_level = torch.ones(
                 batch_size, 
                 2 * current_level.size(1),  # Double the nodes each level
                 device=alphas.device
@@ -256,17 +280,23 @@ class BinarySplitDecoder(nn.Module):
                 alpha_idx += 1
                 
                 # Compute children without inplace operations
-                next_level[:, 2*n] = parent * alpha
-                next_level[:, 2*n + 1] = parent * (1 - alpha)
+                left = parent * alpha
+                right = parent * (1-alpha)
+                
+                next_level[:, 2*n] = left
+                next_level[:, 2*n + 1] = right
             
             current_level = next_level  # Replace parent level with children
 
         return current_level  # Final level contains all leaf nodes
-
+    
     def forward(self, x):
         return self.build_tree(x)
 
 def hierarchical_interpolate(sequence, leaf_weights):
+    assert not torch.isnan(sequence).any(), "NaN in input sequence"
+    assert not torch.isnan(leaf_weights).any(), "NaN in leaf weights"
+    
     batch, time, feat = sequence.shape
     
     # Compute cumulative distribution

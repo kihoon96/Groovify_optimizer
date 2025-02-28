@@ -53,7 +53,10 @@ class GroovifyOptimizer:
             norm_bpm = (bpm - 120.0) / 40.0  # Mean=120, STD=40
             
             self.optimizer.zero_grad()  
-            out_activations = self.model(sampled_motion_seq, norm_bpm)
+            out_activations = self.model(sampled_motion_seq, bpm)
+            # if torch.isnan(out_activations).any():
+            #     import pdb; pdb.set_trace()
+            # # print(f"{out_activations.min()}. {out_activations.max()}")
             binarytree =  self.binarydecoder(out_activations)
             interpolation_seq = hierarchical_interpolate(sampled_motion_seq, binarytree)
             out_motion_seq= self.resample2(interpolation_seq)
@@ -98,7 +101,7 @@ if __name__ == "__main__":
             'hidden_dim': 256,  
             'output_dim': 64  
         },  
-        'learning_rate': 1e-3,  
+        'learning_rate': 3e-4,  
         'weight_decay': 1e-5,  
         'epochs': 100,  
         'batch_size': 32  
